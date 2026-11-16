@@ -8047,6 +8047,8 @@ static uint8_t screenshot_requested;
 static uint32_t keys_injected;
 
 static void capture_screenshot_now(void) {
+    void build_scope_csv_snapshot(void);
+    build_scope_csv_snapshot();
     ui.screenshot_state = SCREENSHOT_STATE_SAVING;
     ui.screenshot_overlay_ms = SCREENSHOT_OVERLAY_MS;
     draw_screenshot_overlay(C_BG);
@@ -11295,4 +11297,124 @@ uint8_t ui_gen_wave(void) {
 
 uint8_t ui_gen_amplitude(void) {
     return ui.gen_amp_tenths_v;
+}
+
+enum { CSV_FILE_SIZE = 12288 };
+char *screenshot_csv_buffer(void);
+
+static uint16_t csv_append_str(char *buf, uint16_t pos, uint16_t max_len, const char *s) {
+    while (s && *s && pos + 2u < max_len) {
+        buf[pos++] = *s++;
+    }
+    return pos;
+}
+
+static uint16_t csv_append_u64(char *buf, uint16_t pos, uint16_t max_len, uint64_t val) {
+    char digits[20];
+    uint8_t n = 0;
+
+    if (!val) {
+        if (pos + 2u < max_len) buf[pos++] = '0';
+        return pos;
+    }
+    while (val > 0u) {
+        uint64_t q = 0;
+        uint32_t r = 0;
+        for (int8_t bit = 63; bit >= 0; --bit) {
+            r = (r << 1) | (uint32_t)((val >> (uint8_t)bit) & 1u);
+            if (r >= 10u) {
+                r -= 10u;
+                q |= (1ULL << (uint8_t)bit);
+            }
+        }
+        digits[n++] = (char)('0' + r);
+        val = q;
+    }
+    while (n && pos + 2u < max_len) {
+        buf[pos++] = digits[--n];
+    }
+    return pos;
+}
+
+static uint16_t csv_append_volts(char *buf, uint16_t pos, uint16_t max_len, int32_t mv) {
+    uint32_t abs_mv;
+
+    if (pos + 12u >= max_len) {
+        return pos;
+    }
+    if (mv < 0) {
+        buf[pos++] = '-';
+        abs_mv = (uint32_t)(-mv);
+    } else {
+        abs_mv = (uint32_t)mv;
+    }
+    pos = csv_append_u64(buf, pos, max_len, abs_mv / 1000u);
+    buf[pos++] = '.';
+    buf[pos++] = (char)('0' + ((abs_mv / 100u) % 10u));
+    buf[pos++] = (char)('0' + ((abs_mv / 10u) % 10u));
+    buf[pos++] = (char)('0' + (abs_mv % 10u));
+    return pos;
+}
+
+void build_scope_csv_snapshot(void) {
+    char *buf = screenshot_csv_buffer();
+    const uint16_t max_len = CSV_FILE_SIZE;
+    uint16_t pos = 0;
+
+    if (ui.mode == UI_MODE_SCOPE) {
+        uint32_t period_ns = scope_sample_period_ns();
+        uint8_t slow_roll = scope_slow_roll_active();
+        uint16_t r_count = scope_slow_roll_count;
+
+        pos = csv_append_str(buf, pos, max_len, "# FNIRSI 2C23T Scope CSV\r\n# Timebase: ");
+        pos = csv_append_str(buf, pos, max_len, scope_timebase_chip_label());
+        pos = csv_append_str(buf, pos, max_len, " | CH1: ");
+        pos = csv_append_str(buf, pos, max_len, scope_ch_enabled[0] ? scope_vdiv_chip_label_for_channel(0) : "OFF");
+        pos = csv_append_str(buf, pos, max_len, " | CH2: ");
+        pos = csv_append_str(buf, pos, max_len, scope_ch_enabled[1] ? scope_vdiv_chip_label_for_channel(1) : "OFF");
+        pos = csv_append_str(buf, pos, max_len, "\r\nIndex,Time_ns,CH1_V,CH2_V\r\n");
+
+        for (uint16_t i = 0; i < SCOPE_VISIBLE_SAMPLE_COUNT; ++i) {
+            uint8_t s0 = 128u;
+            uint8_t s1 = 128u;
+            int32_t mv0 = 0;
+            int32_t mv1 = 0;
+
+            if (slow_roll) {
+                uint16_t roll_idx = (r_count > 1u) ?
+                    (uint16_t)((uint32_t)i * (r_count - 1u) / (SCOPE_VISIBLE_SAMPLE_COUNT - 1u)) : 0u;
+                if (scope_ch_enabled[0]) s0 = scope_slow_roll_raw_at(0, roll_idx);
+                if (scope_ch_enabled[1]) s1 = scope_slow_roll_raw_at(1, roll_idx);
+            } else {
+                if (scope_ch_enabled[0]) s0 = scope_display_sample_raw(i, 0, SCOPE_VISIBLE_SAMPLE_COUNT - 1u);
+                if (scope_ch_enabled[1]) s1 = scope_display_sample_raw(i, 1, SCOPE_VISIBLE_SAMPLE_COUNT - 1u);
+            }
+
+            if (scope_ch_enabled[0]) mv0 = scope_raw_delta_mv(0, s0);
+            if (scope_ch_enabled[1]) mv1 = scope_raw_delta_mv(1, s1);
+
+            pos = csv_append_u64(buf, pos, max_len, i);
+            buf[pos++] = ',';
+            pos = csv_append_u64(buf, pos, max_len, (uint64_t)i * (uint64_t)period_ns);
+            buf[pos++] = ',';
+            pos = csv_append_volts(buf, pos, max_len, mv0);
+            buf[pos++] = ',';
+            pos = csv_append_volts(buf, pos, max_len, mv1);
+            buf[pos++] = '\r';
+            buf[pos++] = '\n';
+        }
+    } else {
+        pos = csv_append_str(buf, pos, max_len, "Mode,Value,Unit\r\n");
+        pos = csv_append_str(buf, pos, max_len, dmm_mode_name());
+        buf[pos++] = ',';
+        pos = csv_append_str(buf, pos, max_len, dmm_value_text());
+        buf[pos++] = ',';
+        pos = csv_append_str(buf, pos, max_len, dmm_unit_text());
+        buf[pos++] = '\r';
+        buf[pos++] = '\n';
+    }
+
+    while (pos < max_len) {
+        buf[pos++] = ' ';
+    }
 }
