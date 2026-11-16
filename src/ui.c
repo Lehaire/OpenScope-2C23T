@@ -11299,7 +11299,10 @@ uint8_t ui_gen_amplitude(void) {
     return ui.gen_amp_tenths_v;
 }
 
-char *screenshot_csv_buffer(void);
+__attribute__((weak)) char *screenshot_csv_buffer(void) {
+    static char dummy_csv[12288];
+    return dummy_csv;
+}
 
 static uint16_t csv_append_str(char *buf, uint16_t pos, uint16_t max_len, const char *s) {
     while (s && *s && pos + 2u < max_len) {
