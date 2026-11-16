@@ -11299,7 +11299,6 @@ uint8_t ui_gen_amplitude(void) {
     return ui.gen_amp_tenths_v;
 }
 
-enum { CSV_FILE_SIZE = 12288 };
 char *screenshot_csv_buffer(void);
 
 static uint16_t csv_append_str(char *buf, uint16_t pos, uint16_t max_len, const char *s) {
@@ -11358,7 +11357,7 @@ static uint16_t csv_append_volts(char *buf, uint16_t pos, uint16_t max_len, int3
 
 void build_scope_csv_snapshot(void) {
     char *buf = screenshot_csv_buffer();
-    const uint16_t max_len = CSV_FILE_SIZE;
+    const uint16_t max_len = 12288u;
     uint16_t pos = 0;
 
     if (ui.mode == UI_MODE_SCOPE) {
