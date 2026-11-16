@@ -95,6 +95,7 @@ static uint8_t bmp_byte(uint32_t offset, const uint16_t *fb) {
     return bmp_pixel_byte(fb,
                           (uint16_t)(offset / SCREENSHOT_BMP_ROW_BYTES),
                           (uint16_t)(offset % SCREENSHOT_BMP_ROW_BYTES));
+}
 
 uint8_t screenshot_render_current(uint32_t offset, uint8_t *dst, uint16_t len) {
     const uint16_t *fb = lcd_framebuffer();
@@ -108,6 +109,7 @@ uint8_t screenshot_render_current(uint32_t offset, uint8_t *dst, uint16_t len) {
     }
     return 1;
 }
+
 static char csv_buffer[CSV_FILE_SIZE];
 
 char *screenshot_csv_buffer(void) {
