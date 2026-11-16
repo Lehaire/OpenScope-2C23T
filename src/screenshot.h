@@ -10,4 +10,3 @@ enum {
 
 uint8_t screenshot_render_current(uint32_t offset, uint8_t *dst, uint16_t len);
 char *screenshot_csv_buffer(void);
-uint8_t screenshot_render_csv(uint32_t offset, uint8_t *dst, uint16_t len);
