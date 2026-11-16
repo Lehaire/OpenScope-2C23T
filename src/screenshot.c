@@ -12,6 +12,12 @@ enum {
     SCREENSHOT_BMP_IMAGE_BYTES = SCREENSHOT_BMP_ROW_BYTES * SCREENSHOT_BMP_HEIGHT,
 };
 
+static char csv_buffer[CSV_FILE_SIZE];
+
+char *screenshot_csv_buffer(void) {
+    return csv_buffer;
+}
+
 static uint8_t le32_byte(uint32_t value, uint8_t byte) {
     return (uint8_t)(value >> ((uint32_t)byte * 8u));
 }
@@ -98,31 +104,25 @@ static uint8_t bmp_byte(uint32_t offset, const uint16_t *fb) {
 }
 
 uint8_t screenshot_render_current(uint32_t offset, uint8_t *dst, uint16_t len) {
-    const uint16_t *fb = lcd_framebuffer();
-
-    if (!dst || !fb) {
-        return 0;
-    }
-    for (uint16_t i = 0; i < len; ++i) {
-        uint32_t pos = offset + i;
-        dst[i] = pos < SCREENSHOT_FILE_SIZE ? bmp_byte(pos, fb) : 0u;
-    }
-    return 1;
-}
-
-static char csv_buffer[CSV_FILE_SIZE];
-
-char *screenshot_csv_buffer(void) {
-    return csv_buffer;
-}
-
-uint8_t screenshot_render_csv(uint32_t offset, uint8_t *dst, uint16_t len) {
     if (!dst) {
         return 0;
     }
+    if (offset >= (uint32_t)SCREENSHOT_FILE_SIZE) {
+        uint32_t csv_off = offset - (uint32_t)SCREENSHOT_FILE_SIZE;
+        for (uint16_t i = 0; i < len; ++i) {
+            uint32_t pos = csv_off + i;
+            dst[i] = pos < (uint32_t)CSV_FILE_SIZE ? (uint8_t)csv_buffer[pos] : (uint8_t)' ';
+        }
+        return 1;
+    }
+
+    const uint16_t *fb = lcd_framebuffer();
+    if (!fb) {
+        return 0;
+    }
     for (uint16_t i = 0; i < len; ++i) {
         uint32_t pos = offset + i;
-        dst[i] = pos < CSV_FILE_SIZE ? (uint8_t)csv_buffer[pos] : (uint8_t)' ';
+        dst[i] = pos < (uint32_t)SCREENSHOT_FILE_SIZE ? bmp_byte(pos, fb) : 0u;
     }
     return 1;
 }
