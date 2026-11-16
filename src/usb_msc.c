@@ -575,7 +575,7 @@ static uint8_t raw_fat_mount(raw_fat_volume_t *fat) {
     }
 
     for (uint8_t i = 0; i < 4u; ++i) {
-        const uint8_t *entry = &sector[446u + (uint16_t)i * 16u];
+        const uint8_t *entry = §or[446u + (uint16_t)i * 16u];
         uint32_t start_lba = le32_at(&entry[8]);
         if (!entry[4] || !start_lba || start_lba >= msc_disk_sectors) {
             continue;
@@ -652,7 +652,7 @@ static uint8_t raw_fat_scan_dir_sector(const raw_fat_volume_t *fat,
     }
 
     for (uint16_t off = 0; off + 32u <= fat->bytes_per_sector; off = (uint16_t)(off + 32u)) {
-        uint8_t *entry = &sector[off];
+        uint8_t *entry = §or[off];
         uint8_t attr = entry[11];
         uint32_t size;
         uint32_t cluster;
@@ -1024,7 +1024,7 @@ static uint8_t raw_fat_scan_screenshot_dir_sector(const raw_fat_volume_t *fat,
         return 0;
     }
     for (uint16_t off = 0; off + 32u <= fat->bytes_per_sector; off = (uint16_t)(off + 32u)) {
-        uint8_t *entry = &sector[off];
+        uint8_t *entry = §or[off];
         uint16_t index;
 
         if (entry[0] == 0x00u || entry[0] == 0xE5u) {
@@ -1053,7 +1053,6 @@ static uint16_t raw_screenshot_next_index(const uint8_t *used) {
     if (index < 99u) {
         return (uint16_t)(index + 1u);
     }
-    // IMG_99 exists: reuse the lowest free number instead of duplicating one.
     for (index = 1u; index < 99u; ++index) {
         if (!(used[index / 8u] & (1u << (index % 8u)))) {
             return index;
@@ -1107,10 +1106,12 @@ static uint8_t raw_fat_find_screenshot_dir_entry(const raw_fat_volume_t *fat,
     return have_free && *next_index;
 }
 
-static uint8_t raw_fat_write_screenshot_chain(const raw_fat_volume_t *fat,
-                                              uint32_t first_cluster) {
+static uint8_t raw_fat_write_file_chain(const raw_fat_volume_t *fat,
+                                        uint32_t first_cluster,
+                                        uint32_t file_size,
+                                        uint8_t is_csv) {
     uint8_t *sector = msc_root_shadow;
-    uint32_t remaining = SCREENSHOT_FILE_SIZE;
+    uint32_t remaining = file_size;
     uint32_t file_offset = 0;
     uint32_t cluster = first_cluster;
     uint16_t guard = 0;
@@ -1123,7 +1124,10 @@ static uint8_t raw_fat_write_screenshot_chain(const raw_fat_volume_t *fat,
 
             buf_zero(sector, fat->bytes_per_sector);
             if (chunk) {
-                if (!screenshot_render_current(file_offset, sector, chunk)) {
+                uint8_t ok = is_csv ?
+                    screenshot_render_csv(file_offset, sector, chunk) :
+                    screenshot_render_current(file_offset, sector, chunk);
+                if (!ok) {
                     return 0;
                 }
                 file_offset += chunk;
@@ -1145,29 +1149,39 @@ static uint8_t raw_fat_write_screenshot_chain(const raw_fat_volume_t *fat,
     return !remaining;
 }
 
-static uint8_t raw_fat_write_screenshot_entry(const raw_fat_volume_t *fat,
-                                              uint32_t dir_byte_addr,
-                                              uint16_t index) {
+static uint8_t raw_fat_write_file_entry(const raw_fat_volume_t *fat,
+                                        uint32_t dir_byte_addr,
+                                        uint16_t index,
+                                        uint32_t file_size,
+                                        uint8_t is_csv) {
     uint8_t entry[32];
     uint32_t first_cluster = raw_screenshot_clusters[0];
 
     (void)fat;
     buf_zero(entry, sizeof(entry));
     raw_screenshot_name(entry, index);
+    if (is_csv) {
+        entry[8] = 'C';
+        entry[9] = 'S';
+        entry[10] = 'V';
+    }
     entry[11] = 0x20;
     entry[12] = 0x18;
     put_le16(&entry[20], (uint16_t)(first_cluster >> 16));
     put_le16(&entry[26], (uint16_t)first_cluster);
-    put_le32(&entry[28], SCREENSHOT_FILE_SIZE);
+    put_le32(&entry[28], file_size);
     return raw_storage_write_bytes(dir_byte_addr, entry, sizeof(entry));
 }
 
 static screenshot_save_t raw_fat_save_latest_screenshot(void) {
     raw_fat_volume_t fat;
     uint32_t dir_byte_addr = 0;
+    uint32_t csv_dir_addr = 0;
     uint32_t cluster_bytes;
     uint16_t cluster_count;
+    uint16_t csv_cluster_count;
     uint16_t file_index = 0;
+    uint16_t dummy_index = 0;
 
     if (!raw_fat_mount(&fat) || fat.bytes_per_sector > MSC_SECTOR_SIZE) {
         return SCREENSHOT_SAVE_NO_VOLUME;
@@ -1181,9 +1195,6 @@ static screenshot_save_t raw_fat_save_latest_screenshot(void) {
     if (!cluster_count || cluster_count > SCREENSHOT_CLUSTER_COUNT) {
         return SCREENSHOT_SAVE_NO_VOLUME;
     }
-    // Tell the two kinds of "full" apart. A drive with no free cluster left
-    // and a root directory with no free slot both stop the save dead, and
-    // both used to reach the screen as the same bare error.
     if (!raw_fat_find_screenshot_dir_entry(&fat, &dir_byte_addr, &file_index)) {
         return SCREENSHOT_SAVE_NO_SLOT;
     }
@@ -1192,10 +1203,21 @@ static screenshot_save_t raw_fat_save_latest_screenshot(void) {
     }
 
     if (!raw_fat_link_clusters(&fat, cluster_count) ||
-        !raw_fat_write_screenshot_chain(&fat, raw_screenshot_clusters[0]) ||
-        !raw_fat_write_screenshot_entry(&fat, dir_byte_addr, file_index)) {
+        !raw_fat_write_file_chain(&fat, raw_screenshot_clusters[0], SCREENSHOT_FILE_SIZE, 0u) ||
+        !raw_fat_write_file_entry(&fat, dir_byte_addr, file_index, SCREENSHOT_FILE_SIZE, 0u)) {
         return SCREENSHOT_SAVE_ERROR;
     }
+
+    csv_cluster_count = (uint16_t)((CSV_FILE_SIZE + cluster_bytes - 1u) / cluster_bytes);
+    if (csv_cluster_count && csv_cluster_count <= SCREENSHOT_CLUSTER_COUNT &&
+        raw_fat_find_screenshot_dir_entry(&fat, &csv_dir_addr, &dummy_index) &&
+        raw_fat_find_free_clusters(&fat, csv_cluster_count)) {
+        if (raw_fat_link_clusters(&fat, csv_cluster_count) &&
+            raw_fat_write_file_chain(&fat, raw_screenshot_clusters[0], CSV_FILE_SIZE, 1u)) {
+            (void)raw_fat_write_file_entry(&fat, csv_dir_addr, file_index, CSV_FILE_SIZE, 1u);
+        }
+    }
+
     msc_unit_attention = 1;
     return SCREENSHOT_SAVE_OK;
 }
@@ -1204,9 +1226,7 @@ uint8_t usb_msc_storage_begin(void) {
     if (!usb_ready) {
         return 1;
     }
-    // Keep the USB IRQ off the flash and the shared sector buffer.
     REG32(0xE000E180u) = 1u << 20;
-    // Retry later instead of splitting a SCSI transfer.
     if (msc_state != MSC_IDLE) {
         REG32(NVIC_ISER0) = 1u << 20;
         return 0;
@@ -1235,7 +1255,6 @@ uint8_t usb_msc_store_screenshot(void) {
     return usb_msc_save_screenshot() == SCREENSHOT_SAVE_OK ? 1u : 0u;
 }
 
-// Read each FAT sector once instead of issuing an SPI read per cluster.
 uint8_t usb_msc_storage_free_kb(uint32_t *free_kb, uint32_t *total_kb) {
     raw_fat_volume_t fat;
     uint32_t last_cluster;
@@ -1439,7 +1458,7 @@ static uint8_t raw_fat_export_entry(uint32_t addr, const char name[11],
     buf_zero(entry, sizeof(entry));
     buf_copy(entry, (const uint8_t *)name, 11);
     entry[11] = 0x20;
-    entry[12] = 0x18; // Lowercase short filename and extension.
+    entry[12] = 0x18;
     put_le16(entry + 20, (uint16_t)(cluster >> 16));
     put_le16(entry + 26, (uint16_t)cluster);
     put_le32(entry + 28, size);
@@ -1476,7 +1495,6 @@ boot_export_result_t usb_msc_export_bootloader(const char *version,
         return BOOT_EXPORT_INVALID;
     }
 
-    // Stop USB IRQ access before checking the shared FAT buffers and detaching.
     if (was_enabled) {
         REG32(0xE000E180u) = 1u << 20;
     }
@@ -1520,7 +1538,6 @@ boot_export_result_t usb_msc_export_bootloader(const char *version,
         result = BOOT_EXPORT_STORAGE_ERROR;
         goto done;
     }
-    // Write and verify the data first; publish directory entries only at the end.
     result = raw_fat_export_data(&fat, 0, source, BOOTLOADER_SIZE, progress);
     if (result == BOOT_EXPORT_OK) {
         result = raw_fat_export_data(&fat, clusters, (const uint8_t *)info, info_size, 0);
@@ -1903,7 +1920,6 @@ static void ep1_in(void) {
     }
 }
 
-// Leave room for several complete scope frames.
 enum { CDC_TX_BUF_SIZE = 4096, USB_IRQ_MASK = 1u << 20 };
 static uint8_t cdc_tx_buf[CDC_TX_BUF_SIZE];
 static volatile uint16_t cdc_tx_head;
@@ -1927,7 +1943,6 @@ static void cdc_restore_usb_irq(uint32_t enabled) {
     }
 }
 
-// Returns the text after `prefix`, or 0 when `cmd` does not start with it.
 static const char *cdc_match_prefix(const char *cmd, const char *prefix) {
     while (*prefix) {
         if (*cmd != *prefix) {
@@ -2002,7 +2017,6 @@ static void cdc_send_gen_state(void) {
     usb_cdc_send_bytes((const uint8_t *)buf, pos);
 }
 
-// Handles GEN:* commands. Returns 1 when the command was consumed.
 static uint8_t handle_cdc_gen_command(const char *cmd) {
     const char *arg;
     uint32_t value;
@@ -2060,8 +2074,6 @@ static void handle_cdc_rx_command(const char *cmd) {
             else if (m[0] == 'M' && m[1] == 'A') ui_set_dmm_mode(12);
         }
     } else if ((arg = cdc_match_prefix(cmd, "KEY:")) != 0) {
-        // Presses a button as if it had been pushed on the device, so the
-        // whole interface can be walked from a PC.
         static const struct { const char *name; uint32_t mask; } keys[] = {
             { "MENU", KEY_MENU }, { "OK", KEY_OK },
             { "UP", KEY_UP }, { "DOWN", KEY_DOWN },
@@ -2076,16 +2088,12 @@ static void handle_cdc_rx_command(const char *cmd) {
         };
         for (uint8_t i = 0; i < sizeof(keys) / sizeof(keys[0]); ++i) {
             const char *rest = cdc_match_prefix(arg, keys[i].name);
-            // The receive buffer still holds the line ending, and a short
-            // name must not match a longer one: "MOVE" is not "MOVE_LONG".
             if (rest && cdc_command_end(rest)) {
                 ui_inject_keys(keys[i].mask);
                 break;
             }
         }
     } else if ((arg = cdc_match_prefix(cmd, "SHOT")) != 0 && cdc_command_end(arg)) {
-        // Saves the current screen as IMG_NN.BMP on the USB drive. The reply
-        // ($SHOT,OK or $SHOT,ERR) is sent once the file has been written.
         ui_request_screenshot();
     } else if (cmd[0] == 'S' && cmd[1] == 'C' && cmd[2] == 'O' && cmd[3] == 'P' && cmd[4] == 'E' && cmd[5] == ':') {
         const char *s = cmd + 6;
@@ -2108,7 +2116,6 @@ static void handle_cdc_rx_command(const char *cmd) {
     }
 }
 
-// Keep OUT NAKed until the main loop can run the command outside the IRQ.
 static void cdc_receive_command(void) {
     uint16_t len = pma_get_rx_count(3);
     if (usb_configured && !cdc_rx_pending && len && len < sizeof(cdc_rx_command)) {
@@ -2170,7 +2177,6 @@ void usb_cdc_send_bytes(const uint8_t *data, uint16_t len) {
     }
     uint32_t irq = cdc_pause_usb_irq();
     uint16_t free_bytes = (uint16_t)((cdc_tx_tail - cdc_tx_head - 1u) & (CDC_TX_BUF_SIZE - 1u));
-    // Drop a whole line rather than corrupting a line already in flight.
     if (usb_configured && len <= free_bytes) {
         for (uint16_t i = 0; i < len; ++i) {
             cdc_tx_buf[cdc_tx_head] = data[i];
@@ -2204,7 +2210,6 @@ void usb_cdc_send_dmm(const char *mode, const char *val, const char *unit, uint8
 uint8_t usb_cdc_is_configured(void) {
     return usb_configured;
 }
-
 
 static void usb_handle_setup(const uint8_t *setup) {
     uint8_t bm = setup[0];
@@ -2392,10 +2397,10 @@ void usb_msc_init(void) {
     w25q_bytes = w25q_capacity_bytes();
     msc_disk_sectors = w25q_bytes >= MSC_SECTOR_SIZE ? w25q_bytes / MSC_SECTOR_SIZE : 0u;
 
-    RCC_APB2ENR |= (1u << 2); // GPIOA
-    RCC_APB1ENR |= (1u << 23); // USBFS
-    RCC_APB2ENR |= (1u << 22); // USBFS APB2 gate on AT32
-    RCC_CFGR2 |= 1u << 25; // USB clock source enable on AT32
+    RCC_APB2ENR |= (1u << 2);
+    RCC_APB1ENR |= (1u << 23);
+    RCC_APB2ENR |= (1u << 22);
+    RCC_CFGR2 |= 1u << 25;
     REG32(RCC_BASE + 0x54u) |= (1u << 8) | (1u << 9);
     GPIO_CRH(GPIOA_BASE) = (GPIO_CRH(GPIOA_BASE) & ~((0xFu << 12) | (0xFu << 16))) |
                            (0x4u << 12) | (0x4u << 16);
@@ -2435,7 +2440,7 @@ void usb_msc_set_enabled(uint8_t enabled) {
 
     USB_CNTR = USB_CNTR_FRES | USB_CNTR_PDWN;
     USB_ISTR = 0;
-    REG32(0xE000E180u) = 1u << 20; // USB_LP_CAN1_RX0 IRQ disable
+    REG32(0xE000E180u) = 1u << 20;
     RCC_APB1ENR &= ~(1u << 23);
     RCC_APB2ENR &= ~(1u << 22);
     usb_ready = 0;
