@@ -95,7 +95,6 @@ static uint8_t bmp_byte(uint32_t offset, const uint16_t *fb) {
     return bmp_pixel_byte(fb,
                           (uint16_t)(offset / SCREENSHOT_BMP_ROW_BYTES),
                           (uint16_t)(offset % SCREENSHOT_BMP_ROW_BYTES));
-}
 
 uint8_t screenshot_render_current(uint32_t offset, uint8_t *dst, uint16_t len) {
     const uint16_t *fb = lcd_framebuffer();
@@ -106,6 +105,22 @@ uint8_t screenshot_render_current(uint32_t offset, uint8_t *dst, uint16_t len) {
     for (uint16_t i = 0; i < len; ++i) {
         uint32_t pos = offset + i;
         dst[i] = pos < SCREENSHOT_FILE_SIZE ? bmp_byte(pos, fb) : 0u;
+    }
+    return 1;
+}
+static char csv_buffer[CSV_FILE_SIZE];
+
+char *screenshot_csv_buffer(void) {
+    return csv_buffer;
+}
+
+uint8_t screenshot_render_csv(uint32_t offset, uint8_t *dst, uint16_t len) {
+    if (!dst) {
+        return 0;
+    }
+    for (uint16_t i = 0; i < len; ++i) {
+        uint32_t pos = offset + i;
+        dst[i] = pos < CSV_FILE_SIZE ? (uint8_t)csv_buffer[pos] : (uint8_t)' ';
     }
     return 1;
 }
