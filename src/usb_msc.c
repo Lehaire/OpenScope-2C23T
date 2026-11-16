@@ -575,7 +575,7 @@ static uint8_t raw_fat_mount(raw_fat_volume_t *fat) {
     }
 
     for (uint8_t i = 0; i < 4u; ++i) {
-        const uint8_t *entry = §or[446u + (uint16_t)i * 16u];
+        const uint8_t *entry = sector + 446u + (uint16_t)i * 16u;
         uint32_t start_lba = le32_at(&entry[8]);
         if (!entry[4] || !start_lba || start_lba >= msc_disk_sectors) {
             continue;
@@ -652,7 +652,7 @@ static uint8_t raw_fat_scan_dir_sector(const raw_fat_volume_t *fat,
     }
 
     for (uint16_t off = 0; off + 32u <= fat->bytes_per_sector; off = (uint16_t)(off + 32u)) {
-        uint8_t *entry = §or[off];
+        uint8_t *entry = sector + off;
         uint8_t attr = entry[11];
         uint32_t size;
         uint32_t cluster;
@@ -1024,7 +1024,7 @@ static uint8_t raw_fat_scan_screenshot_dir_sector(const raw_fat_volume_t *fat,
         return 0;
     }
     for (uint16_t off = 0; off + 32u <= fat->bytes_per_sector; off = (uint16_t)(off + 32u)) {
-        uint8_t *entry = §or[off];
+        uint8_t *entry = sector + off;
         uint16_t index;
 
         if (entry[0] == 0x00u || entry[0] == 0xE5u) {
