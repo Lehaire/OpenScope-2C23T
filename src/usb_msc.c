@@ -1124,10 +1124,8 @@ static uint8_t raw_fat_write_file_chain(const raw_fat_volume_t *fat,
 
             buf_zero(sector, fat->bytes_per_sector);
             if (chunk) {
-                uint8_t ok = is_csv ?
-                    screenshot_render_csv(file_offset, sector, chunk) :
-                    screenshot_render_current(file_offset, sector, chunk);
-                if (!ok) {
+uint32_t render_offset = is_csv ? ((uint32_t)SCREENSHOT_FILE_SIZE + file_offset) : file_offset;
+             if (!screenshot_render_current(render_offset, sector, chunk)) {
                     return 0;
                 }
                 file_offset += chunk;
